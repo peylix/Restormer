@@ -190,8 +190,11 @@ def paired_paths_from_meta_info_file(folders, keys, meta_info_file,
     input_folder, gt_folder = folders
     input_key, gt_key = keys
 
+    # NOTE: some datasets (e.g. AllWeather) have filenames containing spaces, so
+    # we use the whole stripped line as the filename instead of splitting on
+    # space. Our meta files contain only filenames (no shape descriptor column).
     with open(meta_info_file, 'r') as fin:
-        gt_names = [line.strip().split(' ')[0] for line in fin]
+        gt_names = [line.strip() for line in fin if line.strip()]
 
     paths = []
     for gt_name in gt_names:
