@@ -131,7 +131,10 @@ def main():
     # parse options, set distributed setting, set ramdom seed
     opt = parse_options(is_train=True)
 
-    torch.backends.cudnn.benchmark = True
+    # benchmark=True probes conv algorithms and can raise
+    # "no valid convolution algorithms available in CuDNN" in backward on some
+    # torch/cuDNN/GPU combos; disable it for robustness.
+    torch.backends.cudnn.benchmark = False
     # torch.backends.cudnn.deterministic = True
 
     # automatic resume ..
