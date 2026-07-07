@@ -40,6 +40,8 @@ parser.add_argument('--result_dir', default='./results/', type=str,
                     help='Directory for results (restored images + metrics.csv)')
 parser.add_argument('--weights', default='./pretrained_models/allweather.pth', type=str,
                     help='Path to weights')
+parser.add_argument('--no_save_images', action='store_true',
+                    help='Skip saving restored images (metrics + CSV only)')
 
 args = parser.parse_args()
 
@@ -68,8 +70,10 @@ model_restoration.eval()
 
 factor = 8
 
+os.makedirs(args.result_dir, exist_ok=True)
 img_save_dir = os.path.join(args.result_dir, 'restored')
-os.makedirs(img_save_dir, exist_ok=True)
+if not args.no_save_images:
+    os.makedirs(img_save_dir, exist_ok=True)
 
 gt_files = natsorted(os.listdir(args.gt_dir))
 gt_paths = {os.path.splitext(f)[0]: os.path.join(args.gt_dir, f) for f in gt_files}
@@ -105,7 +109,8 @@ with torch.no_grad():
 
         basename = os.path.splitext(os.path.basename(file_))[0]
         restored_ubyte = img_as_ubyte(restored)
-        utils.save_img(os.path.join(img_save_dir, basename + '.png'), restored_ubyte)
+        if not args.no_save_images:
+            utils.save_img(os.path.join(img_save_dir, basename + '.png'), restored_ubyte)
 
         # metrics operate on BGR uint8, same as the shared metrics module
         restored_bgr = cv2.cvtColor(restored_ubyte, cv2.COLOR_RGB2BGR)
@@ -126,5 +131,6 @@ with open(csv_path, 'w', newline='') as f:
 summary = build_summary(metric_lists)
 print_metric_summary(summary, decimals=4, title="\nTesting set metrics (mean ± std):")
 print(f"Total image:{len(per_image_rows)}")
-print(f"Restored images: {img_save_dir}")
+if not args.no_save_images:
+    print(f"Restored images: {img_save_dir}")
 print(f"Per-image metrics: {csv_path}")
