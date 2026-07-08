@@ -7,10 +7,12 @@
 ## uniweather metrics module so numbers are comparable across baselines.
 ##
 ## Usage: cd AllWeather && python test.py --input_dir <path> --gt_dir <path> --weights <path>
+## To evaluate all three weather test sets in one go, see test_all.sh.
 ## Extra deps: pip install lpips piq
 
 import csv
 import os
+import re
 import argparse
 
 import numpy as np
@@ -78,20 +80,52 @@ if not args.no_save_images:
 gt_files = natsorted(os.listdir(args.gt_dir))
 gt_paths = {os.path.splitext(f)[0]: os.path.join(args.gt_dir, f) for f in gt_files}
 
+
+def find_gt_path(input_basename):
+    """Match an input image to its GT under the naming schemes of our test sets:
+    - identical basenames (AllWeather / Snow100K: synthetic vs gt)
+    - RainDrop:            '0_rain'          -> '0_clean'
+    - Outdoor-Rain CVPR19: 'im_0001_s80_a04' -> 'im_0001'
+    """
+    if input_basename in gt_paths:
+        return gt_paths[input_basename]
+    if input_basename.endswith('_rain'):
+        candidate = input_basename[:-len('_rain')] + '_clean'
+        if candidate in gt_paths:
+            return gt_paths[candidate]
+    m = re.match(r'^(.+?)_s\d+_a\d+$', input_basename)
+    if m and m.group(1) in gt_paths:
+        return gt_paths[m.group(1)]
+    return None
+
+
 inp_files = natsorted(
     glob(os.path.join(args.input_dir, '*.png')) +
-    glob(os.path.join(args.input_dir, '*.jpg'))
+    glob(os.path.join(args.input_dir, '*.jpg')) +
+    glob(os.path.join(args.input_dir, '*.jpeg'))
 )
-inp_files = [f for f in inp_files if os.path.splitext(os.path.basename(f))[0] in gt_paths]
 
-print(f"Testing on {len(inp_files)} images (matched with GT)")
+pairs = []
+unmatched = []
+for f in inp_files:
+    base = os.path.splitext(os.path.basename(f))[0]
+    gt_path = find_gt_path(base)
+    if gt_path is None:
+        unmatched.append(base)
+    else:
+        pairs.append((f, gt_path))
+
+if unmatched:
+    print(f"Warning: {len(unmatched)} input images have no matching GT, "
+          f"e.g. {unmatched[:5]}")
+print(f"Testing on {len(pairs)} images (matched with GT)")
 
 metric_computer = PerceptualMetricComputer(device='cuda')
 metric_lists = {k: [] for k in METRIC_KEYS}
 per_image_rows = []
 
 with torch.no_grad():
-    for file_ in tqdm(inp_files):
+    for file_, gt_file in tqdm(pairs):
         img = np.float32(utils.load_img(file_)) / 255.
         img = torch.from_numpy(img).permute(2, 0, 1)
         input_ = img.unsqueeze(0).cuda()
@@ -114,7 +148,7 @@ with torch.no_grad():
 
         # metrics operate on BGR uint8, same as the shared metrics module
         restored_bgr = cv2.cvtColor(restored_ubyte, cv2.COLOR_RGB2BGR)
-        gt_bgr = load_image_bgr_or_raise(gt_paths[basename])
+        gt_bgr = load_image_bgr_or_raise(gt_file)
 
         cur = compute_all_metrics(restored_bgr, gt_bgr, metric_computer)
         for k in METRIC_KEYS:
