@@ -13,6 +13,7 @@
 import csv
 import os
 import re
+import time
 import argparse
 
 import numpy as np
@@ -70,6 +71,9 @@ model_restoration.cuda()
 model_restoration = nn.DataParallel(model_restoration)
 model_restoration.eval()
 
+total_params = sum(p.numel() for p in model_restoration.parameters())
+print(f"Model parameters: {total_params:,} ({total_params / 1e6:.2f} M)")
+
 factor = 8
 
 os.makedirs(args.result_dir, exist_ok=True)
@@ -123,6 +127,7 @@ print(f"Testing on {len(pairs)} images (matched with GT)")
 metric_computer = PerceptualMetricComputer(device='cuda')
 metric_lists = {k: [] for k in METRIC_KEYS}
 per_image_rows = []
+inference_times = []
 
 with torch.no_grad():
     for file_, gt_file in tqdm(pairs):
@@ -137,7 +142,12 @@ with torch.no_grad():
         padw = W - w if w % factor != 0 else 0
         input_ = F.pad(input_, (0, padw, 0, padh), 'reflect')
 
+        torch.cuda.synchronize()
+        tic = time.perf_counter()
         restored = model_restoration(input_)
+        torch.cuda.synchronize()
+        inference_times.append(time.perf_counter() - tic)
+
         restored = restored[:, :, :h, :w]
         restored = torch.clamp(restored, 0, 1).cpu().detach().permute(0, 2, 3, 1).squeeze(0).numpy()
 
@@ -153,18 +163,33 @@ with torch.no_grad():
         cur = compute_all_metrics(restored_bgr, gt_bgr, metric_computer)
         for k in METRIC_KEYS:
             metric_lists[k].append(cur[k])
-        per_image_rows.append([basename] + [cur[k] for k in METRIC_KEYS])
+        per_image_rows.append([basename] + [cur[k] for k in METRIC_KEYS]
+                              + [inference_times[-1]])
 
 # per-image metrics for later analysis (e.g. per-domain breakdown)
 csv_path = os.path.join(args.result_dir, 'metrics.csv')
 with open(csv_path, 'w', newline='') as f:
     writer = csv.writer(f)
-    writer.writerow(['image'] + METRIC_KEYS)
+    writer.writerow(['image'] + METRIC_KEYS + ['inference_time_s'])
     writer.writerows(per_image_rows)
 
 summary = build_summary(metric_lists)
 print_metric_summary(summary, decimals=4, title="\nTesting set metrics (mean ± std):")
 print(f"Total image:{len(per_image_rows)}")
+
+print(f"Model parameters: {total_params:,} ({total_params / 1e6:.2f} M)")
+# The first image is discarded from the timing stats: it includes CUDA/cuDNN
+# warm-up and is far slower than steady-state inference.
+if len(inference_times) > 1:
+    steady = np.asarray(inference_times[1:])
+    std = steady.std(ddof=1) if steady.size > 1 else 0.0
+    print(f"Inference time per image (first image excluded): "
+          f"{steady.mean() * 1000:.2f} ± {std * 1000:.2f} ms "
+          f"({1.0 / steady.mean():.2f} FPS, averaged over {steady.size} images; "
+          f"first image took {inference_times[0] * 1000:.2f} ms)")
+elif inference_times:
+    print(f"Inference time: only one image ({inference_times[0] * 1000:.2f} ms, "
+          f"includes warm-up — not representative)")
 if not args.no_save_images:
     print(f"Restored images: {img_save_dir}")
 print(f"Per-image metrics: {csv_path}")
